@@ -16,6 +16,7 @@ but cannot always guarantee backwards compatibility. Changes that may **break co
   - `__pow__` now supports raising to negative powers (as series, arrays or scalars). E.g. `series ** (-2)`. [#3298](https://github.com/unit8co/darts/pull/3298) by [Gabriel Demetrios Lafis](https://github.com/galafis).
   - `__truediv__` now supports dividing by zeros (as series, arrays or scalars). E.g. `series / 0.`. [#3298](https://github.com/unit8co/darts/pull/3298) by [Gabriel Demetrios Lafis](https://github.com/galafis).
   - Added a warning when calling `values()` on stochastic series without specifying a sample. [#3307](https://github.com/unit8co/darts/pull/3307) by [Pallav Biyala](https://github.com/Pallav-Biyala).
+  - 🔴 Added support for time zone aware `TimeSeries`: the time zone of a time zone aware time index is now kept instead of being removed. The time zone is preserved through series creation (from times and values, pandas Series / DataFrame, time columns), JSON and pickle round trips (including safe model loading), and calendar frequencies (daily and longer) step on the local wall clock across daylight saving time changes. Time zone naive timestamps passed to a time zone aware series (e.g. for slicing, splitting, or as `start` in `historical_forecasts()`) are interpreted as wall times in the series' time zone. String timestamps that carry UTC offsets are read as UTC. [#1709](https://github.com/unit8co/darts/issues/1709) by [Madhav Singh Chahar](https://github.com/madhavschahar).
 
 **Fixed**
 

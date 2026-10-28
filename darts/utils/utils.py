@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 from narwhals import DataFrame
 from pandas._libs.tslibs.offsets import BusinessMixin
+from pandas._libs.tslibs.timezones import get_timezone
 
 from darts.logging import get_logger, raise_log
 from darts.typing import TimeIndex
@@ -448,6 +449,13 @@ def n_steps_between(
             diff += diff % freq
         n_steps = diff // freq
     else:
+        # calendar frequencies (days and longer) step on the local wall clock of
+        # time zone aware timestamps; count the steps between the wall times
+        # (this also avoids `to_period()` warning about dropping the time zone)
+        if isinstance(start, pd.Timestamp) and start.tz is not None:
+            start = start.tz_localize(None)
+        if isinstance(end, pd.Timestamp) and end.tz is not None:
+            end = end.tz_localize(None)
         period_alias = pd.tseries.frequencies.get_period_alias(freq.name)
         if isinstance(freq, BusinessMixin) or period_alias is None:
             # for lower pandas versions ~1.5.0, business frequencies wrongly have a period alias.
@@ -588,13 +596,38 @@ def generate_index(
             # adjust `end` so that it intersects with `freq`
             end = freq.rollback(end) if freq.n >= 0 else freq.rollforward(end)
 
-        index = pd.date_range(
-            start=start,
-            end=end,
-            periods=length,
-            freq=freq,
-            name=name,
-        )
+        time_zone = (start if start is not None else end).tz
+        if time_zone is not None and not isinstance(freq, pd.offsets.Tick):
+            # calendar steps (days and longer) are taken on the wall clock of the time zone
+            # pandas cannot start the range at a wall time that does not exist: start one step
+            # earlier (or end one step later) and drop that step
+            if start is not None:
+                index = pd.date_range(
+                    start=_wall_time(start) - freq,
+                    end=_wall_time(end),
+                    periods=None if length is None else length + 1,
+                    freq=freq,
+                    tz=time_zone,
+                    name=name,
+                    **_LOCALIZE_KWARGS,
+                )[1:]
+            else:
+                index = pd.date_range(
+                    end=_wall_time(end) + freq,
+                    periods=length + 1,
+                    freq=freq,
+                    tz=time_zone,
+                    name=name,
+                    **_LOCALIZE_KWARGS,
+                )[:-1]
+        else:
+            index = pd.date_range(
+                start=start,
+                end=end,
+                periods=length,
+                freq=freq,
+                name=name,
+            )
     else:  # int
         step = 1 if freq is None else freq
         if start is None:
@@ -755,6 +788,56 @@ class ModelType(Enum):
     FORECASTING_CLASSIFIER = 1
 
 
+# a wall time that does not exist in the time zone (e.g. midnight in zones that change their clocks at midnight)
+# is moved to the first moment that exists; a wall time that exists twice counts at its first occurrence
+_LOCALIZE_KWARGS = {"nonexistent": "shift_forward", "ambiguous": True}
+
+
+def _wall_time(ts: pd.Timestamp | None) -> pd.Timestamp | None:
+    """Return the time zone naive wall time of a (time zone aware) timestamp.
+
+    A day that starts later than midnight because its midnight does not exist counts as starting at midnight.
+    """
+    if ts is None or ts.tz is None:
+        return ts
+    wall = ts.tz_localize(None)
+    day = wall.normalize()
+    if wall != day and ts == day.tz_localize(ts.tz, **_LOCALIZE_KWARGS):
+        return day
+    return wall
+
+
+def _add_steps(ts: pd.Timestamp, n: int, freq) -> pd.Timestamp:
+    """Return the timestamp `n` steps of `freq` after (or before for negative `n`) `ts`."""
+    if (
+        not isinstance(ts, pd.Timestamp)
+        or ts.tz is None
+        or isinstance(freq, pd.offsets.Tick)
+        or n == 0
+    ):
+        return ts + n * freq
+    if n > 0:
+        return generate_index(start=ts, length=n + 1, freq=freq)[-1]
+    return generate_index(end=ts, length=1 - n, freq=freq)[0]
+
+
+def _time_zone_key(tz) -> str:
+    """Return a string from which `_time_zone_from_key()` rebuilds the time zone `tz`."""
+    key = get_timezone(tz)
+    if isinstance(key, str):
+        return key
+    # fixed UTC offsets (e.g. `datetime.timezone`) are stored by their offset
+    offset = int(tz.utcoffset(None).total_seconds())
+    sign = "-" if offset < 0 else "+"
+    hours, minutes = divmod(abs(offset) // 60, 60)
+    return f"UTC{sign}{hours:02d}:{minutes:02d}"
+
+
+def _time_zone_from_key(key: str):
+    """Rebuild a time zone from a key returned by `_time_zone_key()`."""
+    return pd.DatetimeTZDtype(tz=key).tz
+
+
 def dataframe_col_to_time_index(
     df: DataFrame,
     time_col: str,
@@ -788,27 +871,30 @@ def dataframe_col_to_time_index(
         try:
             time_index = pd.DatetimeIndex(time_col_vals)
         except ValueError:
-            raise_log(
-                AttributeError(
-                    "'time_col' is of 'String' dtype but doesn't contain valid timestamps"
+            time_index = None
+        if time_index is None or time_index.tz is not None:
+            # timestamps written with UTC offsets (e.g. on both sides of a daylight saving
+            # time change) only identify the instant, not the time zone; read them as UTC
+            try:
+                time_index = pd.DatetimeIndex(pd.to_datetime(time_col_vals, utc=True))
+            except ValueError:
+                raise_log(
+                    AttributeError(
+                        "'time_col' is of 'String' dtype but doesn't contain valid timestamps"
+                    )
                 )
-            )
     elif isinstance(time_col_vals.dtype, nw.Datetime):
-        # force time index to be timezone naive, as polars converts to UTC
-        time_zone = time_col_vals.dtype.time_zone
-        if time_zone is not None:
-            logger.warning(
-                "The provided DatetimeIndex was associated with a timezone (tz), which is currently not "
-                "supported. To avoid unexpected behaviour, the tz information was removed. Consider calling "
-                f"`ts.time_index.tz_localize({time_zone})` when exporting the results."
-                "To plot the series with the right time steps, consider setting the matplotlib.pyplot "
-                "`rcParams['timezone']` parameter to automatically convert the time axis back to the "
-                "original timezone."
-            )
-            time_col_vals = time_col_vals.dt.replace_time_zone(None)
         time_index = pd.DatetimeIndex(time_col_vals)
+        time_zone = time_col_vals.dtype.time_zone
+        if time_zone is not None and time_index.tz is None:
+            # time zone aware values are converted to UTC instants
+            time_index = time_index.tz_localize("UTC").tz_convert(time_zone)
     elif isinstance(time_col_vals.dtype, nw.Date):
         time_index = pd.DatetimeIndex(time_col_vals)
+    elif isinstance(time_col_vals.to_native().dtype, pd.DatetimeTZDtype):
+        # narwhals does not recognize some pandas time zones (e.g. "America/New_York" or
+        # dateutil time zones) and reports an unknown dtype
+        time_index = pd.DatetimeIndex(time_col_vals.to_native())
     else:
         raise_log(
             AttributeError(

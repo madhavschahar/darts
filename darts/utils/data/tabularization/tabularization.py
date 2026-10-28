@@ -21,7 +21,7 @@ from darts.logging import raise_log
 from darts.typing import TimeIndex, TimeSeriesLike
 from darts.utils.data.utils import _process_sample_weight
 from darts.utils.ts_utils import get_single_series, series2seq
-from darts.utils.utils import n_steps_between
+from darts.utils.utils import generate_index, n_steps_between
 
 NP_2_OR_ABOVE = int(np.__version__.split(".")[0]) >= 2
 STABLE_SORT_KWARGS = {"stable": True} if NP_2_OR_ABOVE else {"kind": "stable"}
@@ -1096,7 +1096,7 @@ def _create_lagged_data_by_moving_window(
             start=time_bounds[0], stop=time_bounds[1] + freq, step=freq
         )
     else:
-        times = pd.date_range(start=time_bounds[0], end=time_bounds[1], freq=freq)
+        times = generate_index(start=time_bounds[0], end=time_bounds[1], freq=freq)
 
     if stride > 1:
         # calculate the starting index so that the last element is included after applying the stride
@@ -2042,7 +2042,7 @@ def _extend_time_index(
     if is_range_idx:
         time_index = pd.RangeIndex(start=new_start, stop=new_end + freq, step=freq)
     else:
-        time_index = pd.date_range(start=new_start, end=new_end, freq=freq)
+        time_index = generate_index(start=new_start, end=new_end, freq=freq)
     return time_index
 
 

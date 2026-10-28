@@ -14,7 +14,7 @@ from darts import TimeSeries
 from darts.dataprocessing.transformers import FittableDataTransformer
 from darts.logging import raise_log
 from darts.typing import TimeIndex
-from darts.utils.utils import generate_index
+from darts.utils.utils import _add_steps, generate_index
 
 EncoderOutputType = Sequence[TimeSeries] | list[TimeSeries] | None
 
@@ -175,7 +175,9 @@ class CovariatesIndexGenerator(ABC):
         )
         # generate index end is inclusive, should not be a problem when taking union
         gap = generate_index(
-            start=train_idx[-1], end=inference_idx[0] - target.freq, freq=target.freq
+            start=train_idx[-1],
+            end=_add_steps(inference_idx[0], -1, target.freq),
+            freq=target.freq,
         )
         return (
             train_idx.__class__.union(train_idx, gap).union(inference_idx),
@@ -339,7 +341,7 @@ class PastCovariatesIndexGenerator(CovariatesIndexGenerator):
 
         return (
             generate_index(
-                start=target.end_time() - target.freq * steps_back_end,
+                start=_add_steps(target.end_time(), -steps_back_end, target.freq),
                 length=n_steps,
                 freq=target.freq,
             ),
@@ -452,7 +454,7 @@ class FutureCovariatesIndexGenerator(CovariatesIndexGenerator):
 
         return (
             generate_index(
-                start=target.end_time() - target.freq * steps_back_end,
+                start=_add_steps(target.end_time(), -steps_back_end, target.freq),
                 length=n_steps,
                 freq=target.freq,
             ),
@@ -937,7 +939,7 @@ def _generate_train_idx(target, steps_ahead_start, steps_ahead_end) -> TimeIndex
     # case 2
     idx_start = (
         generate_index(
-            end=target.start_time() - target.freq,
+            end=_add_steps(target.start_time(), -1, target.freq),
             length=abs(steps_ahead_start),
             freq=target.freq,
         )
@@ -957,7 +959,7 @@ def _generate_train_idx(target, steps_ahead_start, steps_ahead_end) -> TimeIndex
     # case 3
     idx_end = (
         generate_index(
-            start=target.end_time() + target.freq,
+            start=_add_steps(target.end_time(), 1, target.freq),
             length=abs(steps_ahead_end),
             freq=target.freq,
         )

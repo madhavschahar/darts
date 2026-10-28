@@ -3506,28 +3506,25 @@ class TestTimeSeriesFromDataFrame:
 
     @pytest.mark.parametrize("backend", TEST_BACKENDS)
     def test_time_col_with_tz_df(self, backend):
-        # numpy and xarray don't support "timezone aware" pd.DatetimeIndex
-        # the BUGFIX removes timezone information without conversion
+        # the time zone of a time zone aware index is kept
 
         time_range_MS = pd.date_range(
             start="20180501", end="20200301", freq="MS", tz="CET"
         )
         values = np.random.uniform(low=-10, high=10, size=len(time_range_MS))
-        # pd.DataFrame loses the tz information unless it is contained in its index
-        # (other columns are silently converted to UTC, with tz attribute set to None)
         df = pd.DataFrame(data=values, index=time_range_MS)
         ts = TimeSeries.from_dataframe(
             df=self.pd_to_backend(df, backend, index=True),
             time_col=None if backend == "pandas" else "index",
         )
-        assert list(ts.time_index) == list(time_range_MS.tz_localize(None))
-        assert list(ts.time_index.tz_localize("CET")) == list(time_range_MS)
-        assert ts.time_index.tz is None
+        assert ts.time_index.tz is not None
+        assert list(ts.time_index) == list(time_range_MS)
+        assert ts.freq == time_range_MS.freq
 
         ts = TimeSeries(times=time_range_MS, values=values)
-        assert list(ts.time_index) == list(time_range_MS.tz_localize(None))
-        assert list(ts.time_index.tz_localize("CET")) == list(time_range_MS)
-        assert ts.time_index.tz is None
+        assert ts.time_index.tz is not None
+        assert list(ts.time_index) == list(time_range_MS)
+        assert ts.freq == time_range_MS.freq
 
         time_range_H = pd.date_range(
             start="20200518", end="20200521", freq="h", tz="CET"
@@ -3539,14 +3536,14 @@ class TestTimeSeriesFromDataFrame:
             df=self.pd_to_backend(df, backend, index=True),
             time_col=None if backend == "pandas" else "index",
         )
-        assert list(ts.time_index) == list(time_range_H.tz_localize(None))
-        assert list(ts.time_index.tz_localize("CET")) == list(time_range_H)
-        assert ts.time_index.tz is None
+        assert ts.time_index.tz is not None
+        assert list(ts.time_index) == list(time_range_H)
+        assert ts.freq == time_range_H.freq
 
         ts = TimeSeries(times=time_range_H, values=values)
-        assert list(ts.time_index) == list(time_range_H.tz_localize(None))
-        assert list(ts.time_index.tz_localize("CET")) == list(time_range_H)
-        assert ts.time_index.tz is None
+        assert ts.time_index.tz is not None
+        assert list(ts.time_index) == list(time_range_H)
+        assert ts.freq == time_range_H.freq
 
     def test_time_col_with_tz_series(self):
         time_range_MS = pd.date_range(
@@ -3555,9 +3552,9 @@ class TestTimeSeriesFromDataFrame:
         values = np.random.uniform(low=-10, high=10, size=len(time_range_MS))
         serie = pd.Series(data=values, index=time_range_MS)
         ts = TimeSeries.from_series(pd_series=serie)
-        assert list(ts.time_index) == list(time_range_MS.tz_localize(None))
-        assert list(ts.time_index.tz_localize("CET")) == list(time_range_MS)
-        assert ts.time_index.tz is None
+        assert ts.time_index.tz is not None
+        assert list(ts.time_index) == list(time_range_MS)
+        assert ts.freq == time_range_MS.freq
 
         time_range_H = pd.date_range(
             start="20200518", end="20200521", freq="h", tz="CET"
@@ -3565,9 +3562,9 @@ class TestTimeSeriesFromDataFrame:
         values = np.random.uniform(low=-10, high=10, size=len(time_range_H))
         series = pd.Series(data=values, index=time_range_H)
         ts = TimeSeries.from_series(pd_series=series)
-        assert list(ts.time_index) == list(time_range_H.tz_localize(None))
-        assert list(ts.time_index.tz_localize("CET")) == list(time_range_H)
-        assert ts.time_index.tz is None
+        assert ts.time_index.tz is not None
+        assert list(ts.time_index) == list(time_range_H)
+        assert ts.freq == time_range_H.freq
 
     @pytest.mark.parametrize("backend", TEST_BACKENDS)
     def test_time_col_convert_garbage(self, backend):

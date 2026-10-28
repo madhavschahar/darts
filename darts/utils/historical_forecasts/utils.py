@@ -159,7 +159,7 @@ def _general_checks_start(
                         "if `start` is a `pd.Timestamp`, all series must be indexed with a `pd.DatetimeIndex`"
                     ),
                 )
-            if start > series_.end_time():
+            if series_._localize_point(start) > series_.end_time():
                 raise_log(
                     ValueError(
                         f"`start` time `{start}` is after the last timestamp `{series_.end_time()}` of the "
@@ -589,6 +589,7 @@ def _get_start_index(
     historical_forecasts_time_index
         Optionally, the historical forecast index (or the boundaries only) to use as the reference index.
     """
+    start = series._localize_point(start)
     series_start, series_end = series.start_time(), series.end_time()
     has_dti = series._has_datetime_index
     # find start position relative to the series start time

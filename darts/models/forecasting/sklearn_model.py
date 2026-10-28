@@ -90,7 +90,7 @@ from darts.utils.likelihood_models.sklearn import (
 )
 from darts.utils.multioutput import MultiOutputMixin, get_multioutput_estimator_cls
 from darts.utils.ts_utils import get_single_series, seq2series, series2seq
-from darts.utils.utils import ModelType, random_method
+from darts.utils.utils import ModelType, _add_steps, random_method
 
 logger = get_logger(__name__)
 
@@ -1303,8 +1303,8 @@ class SKLearnModel(GlobalForecastingModel):
                         else f" at list/sequence index {idx} "
                     )
                     end_ts = series_.end_time()
-                    start_ts = (
-                        series_.end_time() - (min_target_length - 1) * series_.freq
+                    start_ts = _add_steps(
+                        series_.end_time(), 1 - min_target_length, series_.freq
                     )
                     raise_log(
                         ValueError(
@@ -1335,8 +1335,8 @@ class SKLearnModel(GlobalForecastingModel):
                 n_steps = lags_diff + max(0, n - self.output_chunk_length) + shift
 
                 # calculate first and last required covariate time steps
-                start_ts = ts.end_time() - ts.freq * steps_back
-                end_ts = start_ts + ts.freq * (n_steps - 1)
+                start_ts = _add_steps(ts.end_time(), -steps_back, ts.freq)
+                end_ts = _add_steps(start_ts, n_steps - 1, ts.freq)
 
                 # check for sufficient covariate data
                 if not (cov.start_time() <= start_ts and cov.end_time() >= end_ts):
@@ -1454,8 +1454,9 @@ class SKLearnModel(GlobalForecastingModel):
                 ),
                 with_static_covs=False if predict_likelihood_parameters else True,
                 with_hierarchy=False if predict_likelihood_parameters else True,
-                pred_start=input_tgt.end_time()
-                + (1 + self.output_chunk_shift) * input_tgt.freq,
+                pred_start=_add_steps(
+                    input_tgt.end_time(), 1 + self.output_chunk_shift, input_tgt.freq
+                ),
             )
             for idx_ts, (row, input_tgt) in enumerate(zip(predictions, series))
         ]

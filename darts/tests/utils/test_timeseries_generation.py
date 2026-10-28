@@ -185,9 +185,8 @@ class TestTimeSeriesGeneration:
         with pytest.raises(ValueError):
             holidays_timeseries(time_index_3, "US", until=163)
 
-        # test non time zone-naive
-        with pytest.raises(ValueError):
-            holidays_timeseries(time_index_3.tz_localize("UTC"), "US", until=163)
+        # time zone aware indexes are supported
+        test_routine(time_index_3.tz_localize("UTC"), "US")
 
         # test holiday with and without time zone, 1st of August is national holiday in Switzerland
         # time zone naive (e.g. in UTC)
@@ -200,6 +199,10 @@ class TestTimeSeriesGeneration:
         # time zone CET (+2 hour compared to UTC)
         ts = holidays_timeseries(idx, country_code="CH", tz="CET")
         np.testing.assert_array_almost_equal(ts.values()[:, 0], np.array([1, 1, 1]))
+
+        # a time zone aware index uses its local wall time for the holidays
+        ts = holidays_timeseries(idx.tz_localize("CET"), country_code="CH")
+        np.testing.assert_array_almost_equal(ts.values()[:, 0], np.array([0, 0, 1]))
 
         # check same from TimeSeries
         series = TimeSeries.from_times_and_values(times=idx, values=np.arange(len(idx)))
@@ -374,12 +377,13 @@ class TestTimeSeriesGeneration:
             f"attribute `{'h'}` needs to be an attribute of pd.DatetimeIndex."
         )
 
-        # no time zone aware index
-        with pytest.raises(ValueError) as err:
-            self.helper_routine(
-                idx.tz_localize("UTC"), "h", vals_exp=np.arange(len(idx))
-            )
-        assert "`time_index` must be time zone naive." == str(err.value)
+        # time zone aware indexes are supported; attributes use the local wall time
+        vals = [i for i in range(24)] * 2
+        self.helper_routine(idx.tz_localize("UTC"), "hour", vals_exp=vals)
+        self.helper_routine(idx.tz_localize("CET"), "hour", vals_exp=vals)
+        # `tz` converts from the time zone of the index
+        vals = vals[1:] + [0]
+        self.helper_routine(idx.tz_localize("UTC"), "hour", vals_exp=vals, tz="CET")
 
     def test_datetime_attribute_timeseries(self):
         idx = generate_index(start=pd.Timestamp("2000-01-01"), length=48, freq="h")

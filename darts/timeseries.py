@@ -70,7 +70,10 @@ from darts.utils._formatting import (
 )
 from darts.utils.utils import (
     SUPPORTED_RESAMPLE_METHODS,
+    _add_steps,
     _maybe_cast_array_dtype,
+    _time_zone_from_key,
+    _time_zone_key,
     dataframe_col_to_time_index,
     expand_arr,
     generate_index,
@@ -274,20 +277,6 @@ class TimeSeries:
         has_range_index = isinstance(times, pd.RangeIndex)
         has_integer_index = not (has_datetime_index or has_range_index)
 
-        # remove timezone information if present; drops the frequency
-        # TODO: potential to use timezone-aware index since `TimeSeries` was refactored
-        #  to use numpy as backend
-        if has_datetime_index and times.tz is not None:
-            logger.warning(
-                f"The provided DatetimeIndex was associated with a timezone (tz), which is currently "
-                f"not supported. To avoid unexpected behaviour, the tz information was removed. Consider "
-                f"calling `ts.time_index.tz_localize({times.tz})` when exporting the results."
-                f"To plot the series with the right time steps, consider setting the matplotlib.pyplot "
-                f"`rcParams['timezone']` parameter to automatically convert the time axis back to the "
-                f"original timezone."
-            )
-            times = times.tz_localize(None)
-
         has_frequency = (
             has_datetime_index and times.freq is not None
         ) or has_range_index
@@ -325,7 +314,11 @@ class TimeSeries:
             freq = times.freq
             if freq is None:
                 freq = to_offset(times.inferred_freq)
-                times.freq = freq
+                if freq is None and times.tz is not None and len(times) >= 3:
+                    times = self._restore_calendar_frequency(times)
+                    freq = times.freq
+                else:
+                    times.freq = freq
 
             if freq is None:
                 raise_log(
@@ -1498,8 +1491,13 @@ class TimeSeries:
 
         times = parsed.get("index")
         if times is None:
+            start = parsed["time_start"]
+            if parsed.get("time_zone") is not None:
+                start = pd.Timestamp(start).tz_localize(
+                    _time_zone_from_key(parsed["time_zone"])
+                )
             times = generate_index(
-                start=parsed["time_start"],
+                start=start,
                 freq=parsed["time_freq"],
                 length=len(parsed["data"]),
                 name=parsed["time_name"],
@@ -2403,6 +2401,7 @@ class TimeSeries:
         int
             The index position corresponding to the provided point in the series.
         """
+        point = self._localize_point(point)
         point_index = -1
         if isinstance(point, float):
             if not 0.0 <= point <= 1.0:
@@ -2608,6 +2607,8 @@ class TimeSeries:
                     "The two timestamps provided to slice() have to be of the same type."
                 ),
             )
+        start_ts = self._localize_point(start_ts)
+        end_ts = self._localize_point(end_ts)
         if isinstance(start_ts, pd.Timestamp):
             if not self._has_datetime_index:
                 raise_log(
@@ -2673,6 +2674,7 @@ class TimeSeries:
         """
         if n <= 0:
             raise_log(ValueError("n should be a positive integer."))
+        start_ts = self._localize_point(start_ts)
         self._raise_if_not_within(start_ts)
 
         if isinstance(start_ts, int | np.int64) and self._has_datetime_index:
@@ -2705,6 +2707,7 @@ class TimeSeries:
         """
         if n <= 0:
             raise_log(ValueError("n should be a positive integer."))
+        end_ts = self._localize_point(end_ts)
         self._raise_if_not_within(end_ts)
 
         if isinstance(end_ts, int | np.int64) and self._has_datetime_index:
@@ -2966,6 +2969,11 @@ class TimeSeries:
             n = int(n)
 
         try:
+            new_start = (
+                _add_steps(self.start_time(), n, self.freq)
+                if self._has_datetime_index
+                else None
+            )
             self.end_time() + n * self.freq
         except pd.errors.OutOfBoundsDatetime:
             raise_log(
@@ -2977,6 +2985,13 @@ class TimeSeries:
 
         if self.has_range_index:
             new_time_index = self._time_index + n * self.freq
+        elif self._time_index.tz is not None:
+            new_time_index = generate_index(
+                start=new_start,
+                length=len(self),
+                freq=self.freq,
+                name=self._time_index.name,
+            )
         else:
             new_time_index = self._time_index.map(lambda ts: ts + n * self.freq)
             if new_time_index.freq is None:
@@ -3117,7 +3132,7 @@ class TimeSeries:
                 ValueError("Both series must have the same number of samples."),
             )
         if len(self) > 0 and len(other) > 0:
-            if other.start_time() != self.end_time() + self.freq:
+            if other.start_time() != _add_steps(self.end_time(), 1, self.freq):
                 raise_log(
                     ValueError(
                         "Appended TimeSeries must start one (time) step after current one."
@@ -3125,7 +3140,16 @@ class TimeSeries:
                 )
         values_other = _maybe_cast_array_dtype(other._values, self.dtype)
         values = np.concatenate((self._values, values_other), axis=0)
-        times = self._time_index.append(other._time_index)
+        if self._has_datetime_index and self._time_index.tz is not None and len(self):
+            # concatenating would re-validate the frequency across wall times that do not exist
+            times = generate_index(
+                start=self.start_time(),
+                length=len(self) + len(other),
+                freq=self.freq,
+                name=self._time_index.name,
+            )
+        else:
+            times = self._time_index.append(other._time_index)
         return self.__class__(
             times=times,
             values=values,
@@ -3167,7 +3191,7 @@ class TimeSeries:
             )
 
         idx = generate_index(
-            start=self.end_time() + self.freq,
+            start=_add_steps(self.end_time(), 1, self.freq),
             length=len(values),
             freq=self.freq,
             name=self._time_index.name,
@@ -3792,6 +3816,7 @@ class TimeSeries:
         bool
             Whether `ts` is contained within the interval of this series.
         """
+        ts = self._localize_point(ts)
         return self.start_time() <= ts <= self.end_time()
 
     def map(
@@ -4402,6 +4427,10 @@ class TimeSeries:
             "time_name": self._time_index.name,
             "time_start": str(start_time) if self._has_datetime_index else start_time,
         }
+        time_zone = self._time_index.tz if self._has_datetime_index else None
+        if time_zone is not None:
+            result["time_start"] = str(start_time.tz_localize(None))
+            result["time_zone"] = _time_zone_key(time_zone)
 
         static_covariates = self.static_covariates
         if static_covariates is not None:
@@ -5110,6 +5139,18 @@ class TimeSeries:
         return times, values[idx_sorted]
 
     @staticmethod
+    def _restore_calendar_frequency(times: pd.DatetimeIndex) -> pd.DatetimeIndex:
+        """Infer a calendar frequency (days and longer) of a time zone aware index from the wall clock."""
+        wall = times.tz_localize(None).normalize()
+        freq = to_offset(pd.infer_freq(wall)) if wall.is_unique else None
+        if freq is None:
+            return times
+        generated = generate_index(
+            start=times[0], length=len(times), freq=freq, name=times.name
+        )
+        return generated if generated.equals(times) else times
+
+    @staticmethod
     def _observed_freq_datetime_index(index: pd.DatetimeIndex) -> set:
         """Return all observed/inferred frequencies of a `pandas.DatetimeIndex`.
 
@@ -5209,7 +5250,16 @@ class TimeSeries:
         resampled_times = pd.Series(index=times, dtype="object")
         if isinstance(times, pd.DatetimeIndex):
             has_datetime_index = True
-            resampled_times = resampled_times.asfreq(freq)
+            if times.tz is not None and not isinstance(
+                to_offset(freq), pd.offsets.Tick
+            ):
+                resampled_times = resampled_times.reindex(
+                    generate_index(
+                        start=times[0], end=times[-1], freq=freq, name=times.name
+                    )
+                )
+            else:
+                resampled_times = resampled_times.asfreq(freq)
         else:  # integer index (non RangeIndex) -> resampled to RangeIndex
             has_datetime_index = False
             resampled_times = resampled_times.reindex(
@@ -5283,6 +5333,14 @@ class TimeSeries:
             raise_log(
                 ValueError(f"Invalid `axis={axis}`. Must be one of `(1, 2, 3)`."),
             )
+
+    def _localize_point(self, point):
+        """Read a time zone naive timestamp (or index) as wall time in the time zone of the series."""
+        if not self._has_datetime_index or self._time_index.tz is None:
+            return point
+        if isinstance(point, pd.Timestamp | pd.DatetimeIndex) and point.tz is None:
+            return point.tz_localize(self._time_index.tz)
+        return point
 
     def _get_first_timestamp_after(self, ts: pd.Timestamp) -> pd.Timestamp | int:
         return next(filter(lambda t: t >= ts, self._time_index))
@@ -5482,7 +5540,30 @@ class TimeSeries:
         return ts
 
     def __contains__(self, ts: int | pd.Timestamp) -> bool:
-        return ts in self.time_index
+        return self._localize_point(ts) in self.time_index
+
+    def __getstate__(self) -> dict:
+        state = self.__dict__.copy()
+        if self._has_datetime_index and self._time_index.tz is not None:
+            # time zone objects are not allowed by the restricted unpickler; store the
+            # instants in UTC and a key of the time zone instead
+            state["_time_index"] = self._time_index.tz_convert("UTC").tz_localize(None)
+            state["_time_zone"] = _time_zone_key(self._time_index.tz)
+            # cached boundaries are recomputed on demand
+            state.pop("_start_time", None)
+            state.pop("_end_time", None)
+        return state
+
+    def __setstate__(self, state: dict):
+        time_zone = state.pop("_time_zone", None)
+        if time_zone is not None:
+            times = state["_time_index"]
+            state["_time_index"] = pd.DatetimeIndex(
+                times.tz_localize("UTC").tz_convert(_time_zone_from_key(time_zone)),
+                freq=state["_freq"],
+                name=times.name,
+            )
+        self.__dict__.update(state)
 
     def __round__(self, n=None):
         ts = self.copy()
@@ -5701,6 +5782,17 @@ class TimeSeries:
             if self.has_static_covariates and len(self.static_covariates) > 1
             else False
         )
+
+        if isinstance(key, slice):
+            key = slice(
+                self._localize_point(key.start),
+                self._localize_point(key.stop),
+                key.step,
+            )
+        elif isinstance(key, list):
+            key = [self._localize_point(k) for k in key]
+        else:
+            key = self._localize_point(key)
 
         # handle DatetimeIndex and RangeIndex:
         if isinstance(key, TimeIndex):

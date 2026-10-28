@@ -20,7 +20,7 @@ from darts.timeseries import (
     TimeSeries,
 )
 from darts.typing import TimeIndex, TimeZone
-from darts.utils.utils import _maybe_cast_array_dtype, generate_index
+from darts.utils.utils import _add_steps, _maybe_cast_array_dtype, generate_index
 
 ONE_INDEXED_FREQS = {
     "day",
@@ -455,6 +455,14 @@ def _extend_time_index_until(
     else:
         length = None
         end = pd.Timestamp(until) if isinstance(until, str) else until
+        if (
+            datetime_index
+            and time_index.tz is not None
+            and isinstance(end, pd.Timestamp)
+            and end.tz is None
+        ):
+            # a time zone naive `until` is the wall time in the time zone of the index
+            end = end.tz_localize(time_index.tz)
 
     new_time_index = generate_index(
         start=time_index[0],
@@ -901,8 +909,7 @@ def _generate_new_dates(
     Generates `n` new dates after the end of the specified series
     """
     if start is None:
-        last = input_series.end_time()
-        start = last + input_series.freq
+        start = _add_steps(input_series.end_time(), 1, input_series.freq)
     return generate_index(
         start=start,
         freq=input_series.freq,
@@ -934,17 +941,15 @@ def _process_time_index(
                 "`time_index` must be a pandas `DatetimeIndex` or a `TimeSeries` indexed with a `DatetimeIndex`."
             ),
         )
-    if time_index.tz is not None:
-        raise_log(
-            ValueError("`time_index` must be time zone naive."),
-        )
     time_index = _extend_time_index_until(
         time_index, until, add_length, time_index.name
     )
 
-    # convert to another time zone
-    if tz is not None:
+    # convert to another time zone; a time zone naive index is assumed to be in UTC
+    if tz is None:
+        time_index_ = time_index
+    elif time_index.tz is None:
         time_index_ = time_index.tz_localize("UTC").tz_convert(tz)
     else:
-        time_index_ = time_index
+        time_index_ = time_index.tz_convert(tz)
     return time_index, time_index_
